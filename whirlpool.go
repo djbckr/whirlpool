@@ -1,5 +1,13 @@
 package whirlpool
 
+const (
+	cBlock1     = 8
+	cBlock2     = 256
+	digestBits  = 512
+	digestBytes = digestBits >> 3
+	rounds      = 10
+)
+
 var (
 	sBox = []byte{
 		0x18, 0x23, 0xc6, 0xE8, 0x87, 0xB8, 0x01, 0x4F, 0x36, 0xA6, 0xd2, 0xF5, 0x79, 0x6F, 0x91, 0x52,
@@ -19,17 +27,17 @@ var (
 		0x2A, 0xBB, 0xc1, 0x53, 0xdc, 0x0B, 0x9d, 0x6c, 0x31, 0x74, 0xF6, 0x46, 0xAc, 0x89, 0x14, 0xE1,
 		0x16, 0x3A, 0x69, 0x09, 0x70, 0xB6, 0xd0, 0xEd, 0xcc, 0x42, 0x98, 0xA4, 0x28, 0x5c, 0xF8, 0x86}
 
-	c  = make([][]uint64, 8)
-	rc = make([]uint64, rounds+1)
+	c  = make([][]uint64, cBlock1)
+	rc = make([]uint64, rounds)
 )
 
 func init() {
 
 	for i := range c {
-		c[i] = make([]uint64, 256)
+		c[i] = make([]uint64, cBlock2)
 	}
 
-	for x := 0; x < 256; x++ {
+	for x := range c[0] {
 		v1 := uint64(sBox[x])
 
 		v2 := v1 << 1
@@ -55,17 +63,15 @@ func init() {
 
 		c[0][x] = (v1 << 56) | (v1 << 48) | (v4 << 40) | (v1 << 32) | (v8 << 24) | (v5 << 16) | (v2 << 8) | (v9)
 
-		for t := 1; t < 8; t++ {
+		for t := 1; t < cBlock1; t++ {
 			c[t][x] = (c[t-1][x] >> 8) | (c[t-1][x] << 56)
 		}
 
 	}
 
-	rc[0] = 0
-
-	for r := 1; r <= rounds; r++ {
-		i := 8 * (r - 1)
-		rc[r] =
+	for k := range rc {
+		i := 8 * (k)
+		rc[k] =
 			(c[0][i] & 0xff00000000000000) ^
 				(c[1][i+1] & 0x00ff000000000000) ^
 				(c[2][i+2] & 0x0000ff0000000000) ^
@@ -77,12 +83,6 @@ func init() {
 	}
 
 }
-
-const (
-	digestBits  = 512
-	digestBytes = digestBits >> 3
-	rounds      = 10
-)
 
 type nessieStruct struct {
 	bitLength  []byte
@@ -109,33 +109,39 @@ func makeNessie() *nessieStruct {
 }
 
 func (nessie *nessieStruct) processBuffer() {
-	i := 0
 	j := 0
-	for ; i < 8; i++ {
-		nessie.block[i] =
-			(uint64(nessie.buffer[j+0]&0xff) << 56) ^
-				(uint64(nessie.buffer[j+1]&0xff) << 48) ^
-				(uint64(nessie.buffer[j+2]&0xff) << 40) ^
-				(uint64(nessie.buffer[j+3]&0xff) << 32) ^
-				(uint64(nessie.buffer[j+4]&0xff) << 24) ^
-				(uint64(nessie.buffer[j+5]&0xff) << 16) ^
-				(uint64(nessie.buffer[j+6]&0xff) << 8) ^
-				(uint64(nessie.buffer[j+7] & 0xff))
-		j += 8
+	for i := range nessie.block {
+		v := uint64(nessie.buffer[j])
+		j++
+		v = (v << 8) ^ uint64(nessie.buffer[j])
+		j++
+		v = (v << 8) ^ uint64(nessie.buffer[j])
+		j++
+		v = (v << 8) ^ uint64(nessie.buffer[j])
+		j++
+		v = (v << 8) ^ uint64(nessie.buffer[j])
+		j++
+		v = (v << 8) ^ uint64(nessie.buffer[j])
+		j++
+		v = (v << 8) ^ uint64(nessie.buffer[j])
+		j++
+		v = (v << 8) ^ uint64(nessie.buffer[j])
+		j++
+
+		nessie.block[i] = v
 	}
 
-	for i = 0; i < 8; i++ {
+	for i := range nessie.block {
 		nessie.k[i] = nessie.hash[i]
 		nessie.state[i] = nessie.block[i] ^ nessie.k[i]
 	}
 
-	for r := 1; r <= rounds; r++ {
-		for i = 0; i < 8; i++ {
+	for _, v := range rc {
+		for i := range nessie.block {
 			nessie.l[i] = 0
 
-			t := 0
 			s := uint(56)
-			for ; t < 8; t++ {
+			for t := 0; t < 8; t++ {
 				nessie.l[i] ^= c[t][(nessie.k[(i-t)&7]>>s)&0xff]
 				s -= 8
 			}
@@ -143,13 +149,12 @@ func (nessie *nessieStruct) processBuffer() {
 
 		copy(nessie.k[:8], nessie.l[:8])
 
-		nessie.k[0] ^= rc[r]
-		for i = 0; i < 8; i++ {
+		nessie.k[0] ^= v
+		for i := range nessie.block {
 			nessie.l[i] = nessie.k[i]
 
-			t := 0
 			s := uint(56)
-			for ; t < 8; t++ {
+			for t := 0; t < 8; t++ {
 				nessie.l[i] ^= c[t][(nessie.state[(i-t)&7]>>s)&0xff]
 				s -= 8
 			}
@@ -158,7 +163,7 @@ func (nessie *nessieStruct) processBuffer() {
 		copy(nessie.state[:8], nessie.l[:8])
 	}
 
-	for i = 0; i < 8; i++ {
+	for i := range nessie.block {
 		nessie.hash[i] ^= nessie.state[i] ^ nessie.block[i]
 	}
 }
